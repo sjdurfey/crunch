@@ -31,7 +31,6 @@ import org.apache.crunch.io.ReadableSourceTarget;
 import org.apache.crunch.io.seq.SeqFileSource;
 import org.apache.crunch.io.seq.SeqFileSourceTarget;
 import org.apache.crunch.io.text.NLineFileSource;
-import org.apache.crunch.io.text.TextFileSource;
 import org.apache.crunch.types.Converter;
 import org.apache.crunch.types.DeepCopier;
 import org.apache.crunch.types.PType;
@@ -61,25 +60,25 @@ public class WritableType<T, W extends Writable> implements PType<T> {
   private boolean initialized = false;
 
   /**
-   * Factory method for a new WritableType instance whose type class is immutable.
+   * Factory method for a new WritableType instance whose type class is
+   * immutable.
    * <p/>
-   * No checking is done to ensure that instances of the type class are immutable, but deep copying will be skipped
-   * for instances denoted by the created PType.
+   * No checking is done to ensure that instances of the type class are
+   * immutable, but deep copying will be skipped for instances denoted by the
+   * created PType.
    */
   public static <T, W extends Writable> WritableType<T, W> immutableType(Class<T> typeClass, Class<W> writableClass,
-                                                                         MapFn<W, T> inputDoFn, MapFn<T, W> outputDoFn,
-                                                                         PType... subTypes) {
-    return new WritableType<T, W>(typeClass, writableClass, inputDoFn, outputDoFn,
-                                  null, subTypes);
+      MapFn<W, T> inputDoFn, MapFn<T, W> outputDoFn, PType... subTypes) {
+    return new WritableType<T, W>(typeClass, writableClass, inputDoFn, outputDoFn, null, subTypes);
   }
 
-  public WritableType(Class<T> typeClass, Class<W> writableClass, MapFn<W, T> inputDoFn,
-                       MapFn<T, W> outputDoFn, PType... subTypes) {
+  public WritableType(Class<T> typeClass, Class<W> writableClass, MapFn<W, T> inputDoFn, MapFn<T, W> outputDoFn,
+      PType... subTypes) {
     this(typeClass, writableClass, inputDoFn, outputDoFn, new WritableDeepCopier<W>(writableClass), subTypes);
   }
 
-  private WritableType(Class<T> typeClass, Class<W> writableClass, MapFn<W, T> inputDoFn,
-      MapFn<T, W> outputDoFn, DeepCopier<W> deepCopier, PType... subTypes) {
+  private WritableType(Class<T> typeClass, Class<W> writableClass, MapFn<W, T> inputDoFn, MapFn<T, W> outputDoFn,
+      DeepCopier<W> deepCopier, PType... subTypes) {
     this.typeClass = typeClass;
     this.writableClass = writableClass;
     this.inputFn = inputDoFn;
@@ -130,7 +129,7 @@ public class WritableType<T, W extends Writable> implements PType<T> {
 
   @Override
   public ReadableSource<T> createSourceTarget(Configuration conf, Path path, Iterable<T> contents, int parallelism)
-    throws IOException {
+      throws IOException {
     FileSystem fs = FileSystem.get(conf);
     outputFn.setConfiguration(conf);
     outputFn.initialize();
@@ -173,8 +172,7 @@ public class WritableType<T, W extends Writable> implements PType<T> {
       return false;
     }
     WritableType wt = (WritableType) obj;
-    return (typeClass.equals(wt.typeClass) && writableClass.equals(wt.writableClass) && subTypes
-        .equals(wt.subTypes));
+    return (typeClass.equals(wt.typeClass) && writableClass.equals(wt.writableClass) && subTypes.equals(wt.subTypes));
   }
 
   @Override

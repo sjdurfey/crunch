@@ -1,0 +1,291 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.crunch.io.hcatalog;
+
+import com.google.common.base.Objects;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
+import org.apache.commons.lang.builder.ToStringBuilder;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.apache.crunch.CrunchRuntimeException;
+import org.apache.crunch.ReadableData;
+import org.apache.crunch.Source;
+import org.apache.crunch.impl.mr.run.CrunchMapper;
+import org.apache.crunch.io.CrunchInputs;
+import org.apache.crunch.io.FormatBundle;
+import org.apache.crunch.io.ReadableSource;
+import org.apache.crunch.io.SourceTargetHelper;
+import org.apache.crunch.types.Converter;
+import org.apache.crunch.types.PType;
+import org.apache.crunch.types.writable.Writables;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.common.StatsSetupConst;
+import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
+import org.apache.hadoop.hive.metastore.IMetaStoreClient;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.apache.hadoop.hive.ql.metadata.Table;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hive.hcatalog.common.HCatConstants;
+import org.apache.hive.hcatalog.common.HCatException;
+import org.apache.hive.hcatalog.common.HCatUtil;
+import org.apache.hive.hcatalog.data.HCatRecord;
+import org.apache.hive.hcatalog.data.schema.HCatSchema;
+import org.apache.hive.hcatalog.mapreduce.HCatInputFormat;
+import org.apache.hive.hcatalog.mapreduce.InputJobInfo;
+import org.apache.hive.hcatalog.mapreduce.PartInfo;
+import org.apache.thrift.TException;
+
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+import javax.annotation.Nullable;
+
+public class HCatSource implements ReadableSource<HCatRecord> {
+
+  private static final Log LOG = LogFactory.getLog(HCatSource.class);
+  private static final String DEFAULT_DATABASE_NAME = "default";
+  private static final PType<HCatRecord> PTYPE = Writables.writables(HCatRecord.class);
+  private Configuration newConf;
+  private boolean configured = false;
+
+  private final FormatBundle<HCatInputFormat> bundle = FormatBundle.forInput(HCatInputFormat.class);
+  private final String database;
+  private final String table;
+  @Nullable
+  private final String filter;
+  private Table hiveTableCached;
+
+  private static final long DEFAULT_ESTIMATE = 1024 * 1024 * 1;
+
+  public HCatSource(@Nullable String database, String table) {
+    this(database, table, null);
+  }
+
+  public HCatSource(String table) {
+    this(DEFAULT_DATABASE_NAME, table);
+  }
+
+  public HCatSource(@Nullable String database, String table, @Nullable String filter) {
+    this.database = Strings.isNullOrEmpty(database) ? DEFAULT_DATABASE_NAME : database;
+    this.table = Preconditions.checkNotNull(table);
+    this.filter = filter;
+  }
+
+  @Override
+  public Source<HCatRecord> inputConf(String key, String value) {
+    bundle.set(key, value);
+    return this;
+  }
+
+  @Override
+  public PType<HCatRecord> getType() {
+    return PTYPE;
+  }
+
+  @Override
+  public Converter<?, ?, ?, ?> getConverter() {
+    return PTYPE.getConverter();
+  }
+
+  @Override
+  public void configureSource(Job job, int inputId) throws IOException {
+    Configuration jobConf = job.getConfiguration();
+    configureHCatFormat(jobConf);
+
+    if (inputId == -1) {
+      job.setMapperClass(CrunchMapper.class);
+      job.setInputFormatClass(bundle.getFormatClass());
+      bundle.configure(jobConf);
+    } else {
+      Path dummy = new Path("/hcat/" + database + "/" + table);
+      CrunchInputs.addInputPath(job, dummy, bundle, inputId);
+    }
+  }
+
+  private Configuration configureHCatFormat(Configuration conf) {
+    // It is tricky to get the HCatInputFormat configured correctly.
+    //
+    // The first parameter of setInput() is for both input and output.
+    // It reads Hive MetaStore's JDBC URL or HCatalog server's Thrift address,
+    // and saves the schema into the configuration for runtime needs
+    // (e.g. data location).
+    //
+    // Our solution is to create another configuration object, and
+    // compares with the original one to see what has been added.
+    if (!configured) {
+      newConf = new Configuration(conf);
+      try {
+        HCatInputFormat.setInput(newConf, database, table, filter);
+        configured = true;
+      } catch (IOException e) {
+        throw new CrunchRuntimeException(e);
+      }
+
+      for (Map.Entry<String, String> e : newConf) {
+        String key = e.getKey();
+        String value = e.getValue();
+        if (!Objects.equal(value, conf.get(key))) {
+          bundle.set(key, value);
+        }
+      }
+    }
+
+    return newConf;
+  }
+
+  @Override
+  public long getSize(Configuration conf) {
+
+    // this is tricky. we want to derive the size by the partitions being
+    // retrieved. this aren't known until after the HCatInputFormat has
+    // been initialized (see #configureHCatFormat). preferably, the input
+    // format shouldn't be configured twice to cut down on the number of calls
+    // to hive. getSize can be called before configureSource is called when the
+    // collection is being materialized or a groupby has been performed. so, the
+    // InputJobInfo, which has the partitions, won't be present when this
+    // happens. so, configure here or in configureSource just once.
+    Configuration configuration = configureHCatFormat(conf);
+
+    try {
+      InputJobInfo inputJobInfo = (InputJobInfo) HCatUtil
+          .deserialize(configuration.get(HCatConstants.HCAT_KEY_JOB_INFO));
+      List<PartInfo> partitions = inputJobInfo.getPartitions();
+
+      if (partitions.size() > 0) {
+        long size = 0;
+        for (final PartInfo partition : partitions) {
+          String totalSize = partition.getInputStorageHandlerProperties().getProperty(StatsSetupConst.TOTAL_SIZE);
+
+          if (StringUtils.isEmpty(totalSize)) {
+            size += SourceTargetHelper.getPathSize(conf, new Path(partition.getLocation()));
+          } else {
+            size += Long.parseLong(totalSize);
+          }
+        }
+        return size;
+      } else {
+        System.out.println("made it in the else");
+        Table hiveTable;
+        try {
+          hiveTable = getHiveTable(conf);
+        } catch (TException e) {
+          LOG.info("Unable to determine an estimate for requested table, using default", e);
+          return DEFAULT_ESTIMATE;
+        }
+
+        // managed table will have the size on it, but should be caught as a
+        // partition.size == 1
+        // if the table isn't partitioned
+        String totalSize = hiveTable.getParameters().get(StatsSetupConst.TOTAL_SIZE);
+        System.out.println("found size of: " + totalSize);
+        if (!StringUtils.isEmpty(totalSize))
+          return Long.parseLong(totalSize);
+
+        // not likely to be hit. the totalSize should have been available on the
+        // partitions returned (for unpartitioned tables one partition will be
+        // returned, referring to the entire table), or on the table metadata
+        // (only there for managed tables). if neither existed, then check
+        // against the data location as backup. note: external tables can be
+        // somewhere other than the root location as defined by the table,
+        // as partitions can exist elsewhere. ideally this scenario is caught
+        // by the if statement with partitions > 0
+        Path path = hiveTable.getDataLocation();
+        try {
+          return SourceTargetHelper.getPathSize(conf, path);
+        } catch (IOException e) {
+          LOG.info("Unable to determine an estimate for requested table, using default", e);
+          return DEFAULT_ESTIMATE;
+        }
+      }
+    } catch (IOException e) {
+      LOG.info("Unable to determine an estimate for requested table, using default", e);
+      return DEFAULT_ESTIMATE;
+    }
+  }
+
+  public HCatSchema getTableSchema(Configuration conf) throws HiveException, TException, IOException {
+    Table hiveTable = getHiveTable(conf);
+    try {
+      return HCatUtil.extractSchema(hiveTable);
+    } catch (HCatException e) {
+      throw new CrunchRuntimeException(e);
+    }
+  }
+
+  @Override
+  public long getLastModifiedAt(Configuration conf) {
+    try {
+      Table hiveTable = getHiveTable(conf);
+
+      Path path = hiveTable.getDataLocation();
+      FileSystem fs = path.getFileSystem(conf);
+      return SourceTargetHelper.getLastModifiedAt(fs, path);
+    } catch (IOException e) {
+      LOG.warn("Cannot determine last modified time for source: " + toString(), e);
+      return -1;
+    } catch (TException e) {
+      LOG.warn("Cannot determine last modified time for source: " + toString(), e);
+      return -1;
+    }
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (o == null || !getClass().equals(o.getClass())) {
+      return false;
+    }
+    HCatSource that = (HCatSource) o;
+    return Objects.equal(this.database, that.database) && Objects.equal(this.table, that.table)
+        && Objects.equal(this.filter, that.filter);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hashCode(table, database);
+  }
+
+  @Override
+  public String toString() {
+    return new ToStringBuilder(this).append(database).append(table).append(filter).toString();
+  }
+
+  private Table getHiveTable(Configuration conf) throws IOException, TException {
+    if (hiveTableCached != null) {
+      return hiveTableCached;
+    }
+
+    HiveMetaStoreClient hiveMetastoreClient = HCatUtil.getHiveClient(new HiveConf(conf, HCatSource.class));
+    hiveTableCached = HCatUtil.getTable(hiveMetastoreClient, database, table);
+    return hiveTableCached;
+  }
+
+  @Override
+  public Iterable<HCatRecord> read(Configuration conf) throws IOException {
+    return new HCatRecordDataIterable(bundle, configureHCatFormat(conf));
+  }
+
+  @Override
+  public ReadableData<HCatRecord> asReadable() {
+    return new HCatRecordDataReadable(bundle, database, table, filter);
+  }
+}
