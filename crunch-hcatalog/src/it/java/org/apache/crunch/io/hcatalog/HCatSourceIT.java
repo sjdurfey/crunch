@@ -20,10 +20,6 @@ package org.apache.crunch.io.hcatalog;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import org.apache.commons.io.IOUtils;
-import org.apache.crunch.CrunchRuntimeException;
-import org.apache.crunch.DoFn;
-import org.apache.crunch.Emitter;
-import org.apache.crunch.MapFn;
 import org.apache.crunch.PCollection;
 import org.apache.crunch.PTable;
 import org.apache.crunch.Pair;
@@ -45,21 +41,16 @@ import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
+import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
-import org.apache.hadoop.hive.metastore.api.Partition;
-import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
-import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.mapreduce.TaskInputOutputContext;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hive.hcatalog.common.HCatException;
 import org.apache.hive.hcatalog.common.HCatUtil;
 import org.apache.hive.hcatalog.data.DefaultHCatRecord;
 import org.apache.hive.hcatalog.data.HCatRecord;
 import org.apache.hive.hcatalog.data.schema.HCatSchema;
-import org.apache.thrift.TException;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Rule;
@@ -75,7 +66,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import javax.annotation.Nullable;
 
 import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.when;
@@ -83,7 +73,7 @@ import static org.mockito.Mockito.when;
 public class HCatSourceIT extends CrunchTestSupport {
 
   HiveConf hconf;
-  static HiveMetaStoreClient client;
+  static IMetaStoreClient client;
   static Configuration conf;
 
   @Rule
@@ -104,7 +94,7 @@ public class HCatSourceIT extends CrunchTestSupport {
     // disable verification as the tables won't exist at startup
     conf.set("hive.metastore.schema.verification", "false");
     hconf = HCatUtil.getHiveConf(conf);
-    client = HCatUtil.getHiveClient(hconf);
+    client = HCatUtil.getHiveMetastoreClient(hconf);
   }
 
   @AfterClass
@@ -121,14 +111,15 @@ public class HCatSourceIT extends CrunchTestSupport {
     Path tableRootLocation = tempDir.getPath(tableName);
     String data = "17,josh\n29,indiana\n";
     writeDataToHdfs(data, tableRootLocation, conf);
-    createUnpartitionedTable(tableName, TableType.MANAGED_TABLE, null);
+    HCatTestUtils.createUnpartitionedTable(client, tableName, TableType.MANAGED_TABLE);
 
     Pipeline p = new MRPipeline(HCatSourceIT.class, conf);
     HCatSource src = new HCatSource(tableName);
     HCatSchema schema = src.getTableSchema(p.getConfiguration());
     PCollection<HCatRecord> records = p.read(src);
     List<Pair<Integer, String>> mat = Lists.newArrayList(
-        records.parallelDo(new MapPairFn(schema), Avros.tableOf(Avros.ints(), Avros.strings())).materialize());
+        records.parallelDo(new HCatTestUtils.Fns.MapPairFn(schema), Avros.tableOf(Avros.ints(), Avros.strings()))
+            .materialize());
     assertEquals(ImmutableList.of(Pair.of(17, "josh"), Pair.of(29, "indiana")), mat);
     p.done();
   }
@@ -139,7 +130,7 @@ public class HCatSourceIT extends CrunchTestSupport {
     Path tableRootLocation = tempDir.getPath(tableName);
     String data = "17,josh\n29,indiana\n";
     writeDataToHdfs(data, tableRootLocation, tempDir.getDefaultConfiguration());
-    createUnpartitionedTable(tableName, TableType.MANAGED_TABLE, tableRootLocation);
+    HCatTestUtils.createUnpartitionedTable(client, tableName, TableType.MANAGED_TABLE, tableRootLocation);
 
     Pipeline p = new MRPipeline(HCatSourceIT.class, tempDir.getDefaultConfiguration());
     HCatSource src = new HCatSource(tableName);
@@ -152,7 +143,7 @@ public class HCatSourceIT extends CrunchTestSupport {
     readable.configure(tempDir.getDefaultConfiguration());
 
     Iterator<HCatRecord> iterator = readable.read(mockTIOC).iterator();
-    MapPairFn fn = new MapPairFn(schema);
+    HCatTestUtils.Fns.MapPairFn fn = new HCatTestUtils.Fns.MapPairFn(schema);
     List<Pair<Integer, String>> results = new ArrayList<>();
     while (iterator.hasNext()) {
       results.add(fn.map(iterator.next()));
@@ -168,7 +159,8 @@ public class HCatSourceIT extends CrunchTestSupport {
     Path tableRootLocation = tempDir.getPath(tableName);
     String data = "17,josh\n29,indiana\n";
     writeDataToHdfs(data, tableRootLocation, conf);
-    createUnpartitionedTable(tableName, TableType.MANAGED_TABLE, tableRootLocation);
+    HCatTestUtils.createUnpartitionedTable(client, tableName, TableType.MANAGED_TABLE,
+            tableRootLocation);
 
     Pipeline p = new MRPipeline(HCatSourceIT.class, conf);
     HCatSource src = new HCatSource(tableName);
@@ -178,7 +170,7 @@ public class HCatSourceIT extends CrunchTestSupport {
     // force the materialize here on the HCatRecords themselves ... then
     // transform
     Iterable<HCatRecord> materialize = records.materialize();
-    MapPairFn fn = new MapPairFn(schema);
+    HCatTestUtils.Fns.MapPairFn fn = new HCatTestUtils.Fns.MapPairFn(schema);
     List<Pair<Integer, String>> results = new ArrayList<>();
     for (final HCatRecord record : materialize) {
       results.add(fn.map(record));
@@ -205,10 +197,12 @@ public class HCatSourceIT extends CrunchTestSupport {
     partitionSchema.setName("timestamp");
     partitionSchema.setType("string");
 
-    Table table = createTable("default", tableName, TableType.EXTERNAL_TABLE, tableRootLocation,
-        Collections.singletonList(partitionSchema));
-    client.add_partition(createPartition(table, partition1Location, Collections.singletonList(part1Value)));
-    client.add_partition(createPartition(table, partition2Location, Collections.singletonList(part2Value)));
+    Table table = HCatTestUtils.createTable(client, "default", tableName, TableType.EXTERNAL_TABLE,
+        tableRootLocation, Collections.singletonList(partitionSchema));
+    client
+        .add_partition(HCatTestUtils.createPartition(table, partition1Location, Collections.singletonList(part1Value)));
+    client
+        .add_partition(HCatTestUtils.createPartition(table, partition2Location, Collections.singletonList(part2Value)));
 
     Pipeline p = new MRPipeline(HCatSourceIT.class, tempDir.getDefaultConfiguration());
     String filter = "timestamp=\"" + part1Value + "\" or timestamp=\"" + part2Value + "\"";
@@ -218,7 +212,7 @@ public class HCatSourceIT extends CrunchTestSupport {
     // force the materialize here on the HCatRecords themselves ... then
     // transform
     Iterable<HCatRecord> materialize = records.materialize();
-    MapPairFn fn = new MapPairFn(schema);
+    HCatTestUtils.Fns.MapPairFn fn = new HCatTestUtils.Fns.MapPairFn(schema);
     List<Pair<Integer, String>> results = new ArrayList<>();
     for (final HCatRecord record : materialize) {
       results.add(fn.map(record));
@@ -235,7 +229,8 @@ public class HCatSourceIT extends CrunchTestSupport {
     Path tableRootLocation = tempDir.getPath(tableName);
     String data = "17,josh\n29,indiana\n";
     writeDataToHdfs(data, tableRootLocation, tempDir.getDefaultConfiguration());
-    createUnpartitionedTable(tableName, TableType.MANAGED_TABLE, tableRootLocation);
+    HCatTestUtils.createUnpartitionedTable(client, tableName, TableType.MANAGED_TABLE,
+            tableRootLocation);
 
     Pipeline p = new MRPipeline(HCatSourceIT.class, tempDir.getDefaultConfiguration());
     HCatSource src = new HCatSource(tableName);
@@ -246,10 +241,10 @@ public class HCatSourceIT extends CrunchTestSupport {
     // an explicit check to ensure that the type being written out matches the
     // defined output type.
     // e.g. DefaultHCatRecord != HCatRecord, therefore an exception is thrown
-    PTable<String, DefaultHCatRecord> table = records.parallelDo(new StringHCatRecordMapFn(),
+    PTable<String, DefaultHCatRecord> table = records.parallelDo(new HCatTestUtils.Fns.GroupByHCatRecordFn(),
         Writables.tableOf(Writables.strings(), Writables.writables(DefaultHCatRecord.class)));
 
-    PTable<Integer, String> finaltable = table.groupByKey().parallelDo(new HCatRecordMapFn(schema),
+    PTable<Integer, String> finaltable = table.groupByKey().parallelDo(new HCatTestUtils.Fns.HCatRecordMapFn(schema),
         Avros.tableOf(Avros.ints(), Avros.strings()));
 
     List<Pair<Integer, String>> results = new ArrayList<>();
@@ -308,7 +303,8 @@ public class HCatSourceIT extends CrunchTestSupport {
       HCatSchema schema = src.getTableSchema(p.getConfiguration());
       PCollection<HCatRecord> records = p.read(src);
       List<Pair<String, Integer>> mat = Lists.newArrayList(
-          records.parallelDo(new KeyMapPairFn(schema), Avros.tableOf(Avros.strings(), Avros.ints())).materialize());
+          records.parallelDo(new HCatTestUtils.Fns.KeyMapPairFn(schema), Avros.tableOf(Avros.strings(), Avros.ints()))
+              .materialize());
 
       assertEquals(ImmutableList.of(Pair.of(key1, 17), Pair.of(key2, 29)), mat);
       p.done();
@@ -316,70 +312,6 @@ public class HCatSourceIT extends CrunchTestSupport {
       if (hbaseTestUtil != null) {
         hbaseTestUtil.shutdownMiniHBaseCluster();
         hbaseTestUtil.shutdownMiniZKCluster();
-      }
-    }
-  }
-
-  static class KeyMapPairFn extends MapFn<HCatRecord, Pair<String, Integer>> {
-
-    private HCatSchema schema;
-
-    public KeyMapPairFn(HCatSchema schema) {
-      this.schema = schema;
-    }
-
-    @Override
-    public Pair<String, Integer> map(HCatRecord input) {
-      try {
-        return Pair.of(input.getString("key", schema), input.getInteger("foo", schema));
-      } catch (HCatException e) {
-        throw new CrunchRuntimeException(e);
-      }
-    }
-  }
-
-  static class MapPairFn extends MapFn<HCatRecord, Pair<Integer, String>> {
-
-    private HCatSchema schema;
-
-    public MapPairFn(HCatSchema schema) {
-      this.schema = schema;
-    }
-
-    @Override
-    public Pair<Integer, String> map(HCatRecord input) {
-      try {
-        return Pair.of(input.getInteger("foo", schema), input.getString("bar", schema));
-      } catch (HCatException e) {
-        throw new CrunchRuntimeException(e);
-      }
-    }
-  }
-
-  static class StringHCatRecordMapFn extends MapFn<HCatRecord, Pair<String, DefaultHCatRecord>> {
-
-    @Override
-    public Pair<String, DefaultHCatRecord> map(HCatRecord input) {
-      return Pair.of("record", (DefaultHCatRecord) input);
-    }
-  }
-
-  static class HCatRecordMapFn extends DoFn<Pair<String, Iterable<DefaultHCatRecord>>, Pair<Integer, String>> {
-
-    private HCatSchema schema;
-
-    public HCatRecordMapFn(HCatSchema schema) {
-      this.schema = schema;
-    }
-
-    @Override
-    public void process(Pair<String, Iterable<DefaultHCatRecord>> input, Emitter<Pair<Integer, String>> emitter) {
-      for (final HCatRecord record : input.second()) {
-        try {
-          emitter.emit(Pair.of(record.getInteger("foo", schema), record.getString("bar", schema)));
-        } catch (HCatException e) {
-          throw new CrunchRuntimeException(e);
-        }
       }
     }
   }
@@ -397,55 +329,5 @@ public class HCatSourceIT extends CrunchTestSupport {
     }
 
     return writeLocation;
-  }
-
-  private Table createUnpartitionedTable(String tableName, TableType type)
-      throws IOException, HiveException, TException {
-    return createTable("default", tableName, type, null, Collections.<FieldSchema> emptyList());
-  }
-
-  private Table createUnpartitionedTable(String tableName, TableType type, @Nullable Path datalocation)
-      throws IOException, HiveException, TException {
-    return createTable("default", tableName, type, datalocation, Collections.<FieldSchema> emptyList());
-  }
-
-  private Table createTable(String db, String tableName, TableType type, @Nullable Path datalocation,
-      List<FieldSchema> partCols) throws IOException, HiveException, TException {
-    org.apache.hadoop.hive.ql.metadata.Table tbl = new org.apache.hadoop.hive.ql.metadata.Table(db, tableName);
-    tbl.setOwner(UserGroupInformation.getCurrentUser().getShortUserName());
-    tbl.setTableType(type);
-
-    if (datalocation != null)
-      tbl.setDataLocation(datalocation);
-
-    FieldSchema f1 = new FieldSchema();
-    f1.setName("foo");
-    f1.setType("int");
-    FieldSchema f2 = new FieldSchema();
-    f2.setName("bar");
-    f2.setType("string");
-
-    if (partCols != null && !partCols.isEmpty())
-      tbl.setPartCols(partCols);
-
-    tbl.setFields(ImmutableList.of(f1, f2));
-    tbl.setSerializationLib("org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe");
-    tbl.setSerdeParam("field.delim", ",");
-    tbl.setSerdeParam("serialization.format", ",");
-    tbl.setInputFormatClass("org.apache.hadoop.mapred.TextInputFormat");
-    tbl.setOutputFormatClass("org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat");
-    this.client.createTable(tbl.getTTable());
-
-    return client.getTable(db, tableName);
-  }
-
-  private Partition createPartition(Table table, Path partLocation, List<String> partValues) {
-    Partition partition = new Partition();
-    partition.setDbName(table.getDbName());
-    partition.setTableName(table.getTableName());
-    partition.setSd(new StorageDescriptor(table.getSd()));
-    partition.setValues(partValues);
-    partition.getSd().setLocation(partLocation.toString());
-    return partition;
   }
 }
