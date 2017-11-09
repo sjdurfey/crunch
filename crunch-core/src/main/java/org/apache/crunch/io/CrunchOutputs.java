@@ -48,9 +48,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * An analogue of {@link CrunchInputs} for handling multiple
- * {@code OutputFormat} instances writing to multiple files within a single
- * MapReduce job.
+ * An analogue of {@link CrunchInputs} for handling multiple {@code OutputFormat} instances
+ * writing to multiple files within a single MapReduce job.
  */
 public class CrunchOutputs<K, V> {
   public static final String CRUNCH_OUTPUTS = "crunch.outputs.dir";
@@ -66,7 +65,7 @@ public class CrunchOutputs<K, V> {
       Class keyClass, Class valueClass) {
     addNamedOutput(job, name, FormatBundle.forOutput(outputFormatClass), keyClass, valueClass);
   }
-
+  
   public static void addNamedOutput(Job job, String name,
       FormatBundle<? extends OutputFormat> outputBundle,
       Class keyClass, Class valueClass) {
@@ -104,7 +103,7 @@ public class CrunchOutputs<K, V> {
     public FormatBundle<OutputFormat<K, V>> bundle;
     public Class<K> keyClass;
     public Class<V> valueClass;
-
+    
     public OutputConfig(FormatBundle<OutputFormat<K, V>> bundle,
         Class<K> keyClass, Class<V> valueClass) {
       this.bundle = bundle;
@@ -138,7 +137,6 @@ public class CrunchOutputs<K, V> {
     }
     return out;
   }
-
   private static final String BASE_OUTPUT_NAME = "mapreduce.output.basename";
   private static final String COUNTERS_GROUP = CrunchOutputs.class.getName();
 
@@ -149,11 +147,10 @@ public class CrunchOutputs<K, V> {
   private final boolean disableOutputCounters;
 
   /**
-   * Creates and initializes multiple outputs support, it should be instantiated
-   * in the Mapper/Reducer setup method.
+   * Creates and initializes multiple outputs support,
+   * it should be instantiated in the Mapper/Reducer setup method.
    *
-   * @param context
-   *          the TaskInputOutputContext object
+   * @param context the TaskInputOutputContext object
    */
   public CrunchOutputs(TaskInputOutputContext<?, ?, K, V> context) {
     this(context.getConfiguration());
@@ -179,7 +176,7 @@ public class CrunchOutputs<K, V> {
     }
     getOutputState(namedOutput).write(key, value);
   }
-
+  
   public void close() throws IOException, InterruptedException {
     for (OutputState<?, ?> out : outputStates.values()) {
       out.close();
@@ -197,7 +194,7 @@ public class CrunchOutputs<K, V> {
     Job job = getJob(baseContext.getJobID(), namedOutput, baseConf);
 
     // Get a job with the expected named output.
-    job = getJob(job.getJobID(), namedOutput, baseConf);
+    job = getJob(job.getJobID(), namedOutput,baseConf);
 
     OutputFormat<K, V> fmt = getOutputFormat(namedOutput, job, namedOutputs.get(namedOutput));
     TaskAttemptContext taskContext = getTaskContext(baseContext, job);
@@ -218,7 +215,7 @@ public class CrunchOutputs<K, V> {
   private static TaskAttemptContext getTaskContext(TaskAttemptContext baseContext, Job job) {
     org.apache.hadoop.mapreduce.TaskAttemptID baseTaskId = baseContext.getTaskAttemptID();
     // Create a task ID context with our specialized job ID.
-    org.apache.hadoop.mapreduce.TaskAttemptID taskId;
+    org.apache.hadoop.mapreduce.TaskAttemptID  taskId;
     taskId = new org.apache.hadoop.mapreduce.TaskAttemptID(job.getJobID().getJtIdentifier(),
             job.getJobID().getId(),
             baseTaskId.isMap(),
@@ -229,8 +226,8 @@ public class CrunchOutputs<K, V> {
 
   private static void setJobID(Job job, JobID jobID, String namedOutput) {
     JobID newJobID = jobID == null || jobID.getJtIdentifier().contains(namedOutput) ?
-            jobID :
-            new JobID(jobID.getJtIdentifier() + "_" + namedOutput, jobID.getId());
+          jobID :
+          new JobID(jobID.getJtIdentifier() + "_" + namedOutput, jobID.getId());
     job.setJobID(newJobID);
   }
 
@@ -251,7 +248,9 @@ public class CrunchOutputs<K, V> {
       OutputConfig outConfig) throws IOException {
     configureJob(namedOutput, job, outConfig);
     try {
-      return ReflectionUtils.newInstance(job.getOutputFormatClass(), job.getConfiguration());
+      return ReflectionUtils.newInstance(
+          job.getOutputFormatClass(),
+          job.getConfiguration());
     } catch (ClassNotFoundException e) {
       throw new IOException(e);
     }
@@ -369,7 +368,7 @@ public class CrunchOutputs<K, V> {
 
     private final TaskAttemptContext baseContext;
 
-    public TaskAttemptContextWrapper(TaskAttemptContext baseContext, Configuration config, TaskAttemptID taskId) {
+    public TaskAttemptContextWrapper(TaskAttemptContext baseContext, Configuration config, TaskAttemptID taskId){
       super(config, taskId);
       this.baseContext = baseContext;
     }

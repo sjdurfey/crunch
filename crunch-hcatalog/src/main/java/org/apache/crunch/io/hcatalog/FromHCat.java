@@ -33,6 +33,7 @@ public final class FromHCat {
    *
    * @param table
    *          table name
+   * @throw IllegalArgumentException if table is null or empty
    */
   public static Source<HCatRecord> table(String table) {
     return new HCatSource(table);
@@ -45,14 +46,16 @@ public final class FromHCat {
    *          database name
    * @param table
    *          table name
+   * @throw IllegalArgumentException if table is null or empty
    */
-  public static Source<HCatRecord> table(@Nullable String database, String table) {
+  public static Source<HCatRecord> table(String database, String table) {
     return new HCatSource(database, table);
   }
 
   /**
    * Creates a {code Source<HCatRecord>} instance from a hive table with custom
-   * filter criteria.
+   * filter criteria. If {@code database} is null, defaults to the default
+   * database instance "database"
    *
    * @param database
    *          database name
@@ -61,8 +64,9 @@ public final class FromHCat {
    * @param filter
    *          a custom filter criteria, e.g. specify partitions by
    *          {@code 'date= "20140424"'} or {@code 'date < "20140424"'}
+   * @throw IllegalArgumentException if table is null or empty
    */
-  public static Source<HCatRecord> table(@Nullable String database, String table, @Nullable String filter) {
+  public static Source<HCatRecord> table(@Nullable String database, String table, String filter) {
     return new HCatSource(database, table, filter);
   }
 }

@@ -30,16 +30,22 @@ import org.apache.crunch.Pair;
 import org.apache.crunch.Pipeline;
 import org.apache.crunch.ReadableData;
 import org.apache.crunch.impl.mr.MRPipeline;
+import org.apache.crunch.impl.mr.run.RuntimeParameters;
 import org.apache.crunch.test.CrunchTestSupport;
+import org.apache.crunch.test.TemporaryPath;
 import org.apache.crunch.types.avro.Avros;
 import org.apache.crunch.types.writable.Writables;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.HBaseTestingUtility;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
-import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.Partition;
@@ -56,7 +62,6 @@ import org.apache.hive.hcatalog.data.schema.HCatSchema;
 import org.apache.thrift.TException;
 import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestName;
@@ -83,6 +88,9 @@ public class HCatSourceIT extends CrunchTestSupport {
 
   @Rule
   public TestName testName = new TestName();
+
+  @Rule
+  public TemporaryPath hbaseTmpDir = new TemporaryPath(RuntimeParameters.TMP_DIR, "hadoop.tmp.dir");
 
   @Before
   public void setUp() throws Exception {
@@ -150,7 +158,7 @@ public class HCatSourceIT extends CrunchTestSupport {
       results.add(fn.map(iterator.next()));
     }
 
-    assertEquals(ImmutableList.of(Pair.of(17, "josh"), Pair.of(29, "indiana")), results);
+    assertEquals(ImmutableList.of(Pair.of(29, "indiana"), Pair.of(17, "josh")), results);
     p.done();
   }
 
@@ -176,7 +184,7 @@ public class HCatSourceIT extends CrunchTestSupport {
       results.add(fn.map(record));
     }
 
-    assertEquals(ImmutableList.of(Pair.of(17, "josh"), Pair.of(29, "indiana")), results);
+    assertEquals(ImmutableList.of(Pair.of(29, "indiana"), Pair.of(17, "josh")), results);
     p.done();
   }
 
@@ -216,7 +224,7 @@ public class HCatSourceIT extends CrunchTestSupport {
       results.add(fn.map(record));
     }
     assertEquals(
-        ImmutableList.of(Pair.of(17, "josh"), Pair.of(29, "indiana"), Pair.of(42, "jackie"), Pair.of(17, "ohio")),
+        ImmutableList.of(Pair.of(29, "indiana"), Pair.of(17, "josh"), Pair.of(17, "ohio"), Pair.of(42, "jackie")),
         results);
     p.done();
   }
@@ -251,6 +259,83 @@ public class HCatSourceIT extends CrunchTestSupport {
 
     assertEquals(ImmutableList.of(Pair.of(17, "josh"), Pair.of(29, "indiana")), results);
     p.done();
+  }
+
+  @Test
+  public void test_HCatRead_NonNativeTable_HBase() throws Exception {
+    HBaseTestingUtility hbaseTestUtil = null;
+    try {
+      String db = "default";
+      String hiveTable = "test";
+      Configuration conf = HBaseConfiguration.create(hbaseTmpDir.getDefaultConfiguration());
+      hbaseTestUtil = new HBaseTestingUtility(conf);
+      hbaseTestUtil.startMiniZKCluster();
+      hbaseTestUtil.startMiniHBaseCluster(1, 1);
+
+      org.apache.hadoop.hbase.client.Table table = hbaseTestUtil.createTable(TableName.valueOf("test-table"), "fam");
+
+      String key1 = "this-is-a-key";
+      Put put = new Put(Bytes.toBytes(key1));
+      put.addColumn("fam".getBytes(), "foo".getBytes(), "17".getBytes());
+      table.put(put);
+      String key2 = "this-is-a-key-too";
+      Put put2 = new Put(Bytes.toBytes(key2));
+      put2.addColumn("fam".getBytes(), "foo".getBytes(), "29".getBytes());
+      table.put(put2);
+      table.close();
+
+      org.apache.hadoop.hive.ql.metadata.Table tbl = new org.apache.hadoop.hive.ql.metadata.Table(db, hiveTable);
+      tbl.setOwner(UserGroupInformation.getCurrentUser().getShortUserName());
+      tbl.setTableType(TableType.EXTERNAL_TABLE);
+
+      FieldSchema f1 = new FieldSchema();
+      f1.setName("foo");
+      f1.setType("int");
+      FieldSchema f2 = new FieldSchema();
+      f2.setName("key");
+      f2.setType("string");
+
+      tbl.setProperty("hbase.table.name", "test-table");
+      tbl.setProperty("hbase.mapred.output.outputtable", "test-table");
+      tbl.setProperty("storage_handler", "org.apache.hadoop.hive.hbase.HBaseStorageHandler");
+      tbl.setSerializationLib("org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe");
+      tbl.setFields(ImmutableList.of(f1, f2));
+      tbl.setSerdeParam("hbase.columns.mapping", "fam:foo,:key");
+      this.client.createTable(tbl.getTTable());
+
+      Pipeline p = new MRPipeline(HCatSourceIT.class, conf);
+      HCatSource src = new HCatSource(hiveTable);
+      HCatSchema schema = src.getTableSchema(p.getConfiguration());
+      PCollection<HCatRecord> records = p.read(src);
+      List<Pair<String, Integer>> mat = Lists.newArrayList(
+          records.parallelDo(new KeyMapPairFn(schema), Avros.tableOf(Avros.strings(), Avros.ints())).materialize());
+
+      assertEquals(ImmutableList.of(Pair.of(key1, 17), Pair.of(key2, 29)), mat);
+      p.done();
+    } finally {
+      if (hbaseTestUtil != null) {
+        hbaseTestUtil.shutdownMiniHBaseCluster();
+        hbaseTestUtil.shutdownMiniZKCluster();
+      }
+    }
+  }
+
+  static class KeyMapPairFn extends MapFn<HCatRecord, Pair<String, Integer>> {
+
+    private HCatSchema schema;
+
+    public KeyMapPairFn(HCatSchema schema) {
+      this.schema = schema;
+    }
+
+    @Override
+    public Pair<String, Integer> map(HCatRecord input) {
+      try {
+        return Pair.of(input.getString("key", schema), input.getInteger("foo", schema));
+      } catch (HCatException e) {
+        throw new CrunchRuntimeException(e);
+      }
+    }
   }
 
   static class MapPairFn extends MapFn<HCatRecord, Pair<Integer, String>> {

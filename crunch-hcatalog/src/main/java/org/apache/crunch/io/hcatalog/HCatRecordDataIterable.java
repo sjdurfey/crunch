@@ -4,6 +4,7 @@ import com.google.common.base.Function;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
 import org.apache.crunch.CrunchRuntimeException;
+import org.apache.crunch.Pair;
 import org.apache.crunch.io.FormatBundle;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.WritableComparable;
@@ -91,8 +92,9 @@ public class HCatRecordDataIterable implements Iterable<HCatRecord> {
       try {
         hasNext = reader.nextKeyValue();
 
-        if (hasNext)
-          current = reader.getCurrentValue();
+        if (hasNext) {
+          ret = reader.getCurrentValue();
+        }
       } catch (IOException | InterruptedException e) {
         throw new CrunchRuntimeException(e);
       }

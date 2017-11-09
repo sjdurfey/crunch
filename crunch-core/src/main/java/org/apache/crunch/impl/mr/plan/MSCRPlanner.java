@@ -58,7 +58,8 @@ public class MSCRPlanner {
   private int lastJobID = 0;
 
   public MSCRPlanner(MRPipeline pipeline, Map<PCollectionImpl<?>, Set<Target>> outputs,
-      Map<PCollectionImpl<?>, MaterializableIterable> toMaterialize, Set<Target> appendedTargets,
+      Map<PCollectionImpl<?>, MaterializableIterable> toMaterialize,
+      Set<Target> appendedTargets,
       Map<PipelineCallable<?>, Set<Target>> pipelineCallables) {
     this.pipeline = pipeline;
     this.outputs = new TreeMap<PCollectionImpl<?>, Set<Target>>(DEPTH_COMPARATOR);
@@ -82,7 +83,7 @@ public class MSCRPlanner {
       }
       return cmp;
     }
-  };
+  };  
 
   public MRExecutor plan(Class<?> jarClass, Configuration conf) throws IOException {
 
@@ -221,15 +222,15 @@ public class MSCRPlanner {
 
     return exec;
   }
-
+  
   private Graph prepareFinalGraph(Graph baseGraph) {
     Graph graph = new Graph();
-
+    
     for (Vertex baseVertex : baseGraph) {
       // Add all of the vertices in the base graph, but no edges (yet).
       graph.addVertex(baseVertex.getPCollection(), baseVertex.isOutput());
     }
-
+    
     for (Edge e : baseGraph.getAllEdges()) {
       // Add back all of the edges where neither vertex is a GBK.
       if (!e.getHead().isGBK() && !e.getTail().isGBK()) {
@@ -238,7 +239,7 @@ public class MSCRPlanner {
         graph.getEdge(head, tail).addAllNodePaths(e.getNodePaths());
       }
     }
-
+    
     for (Vertex baseVertex : baseGraph) {
       if (baseVertex.isGBK()) {
         Vertex vertex = graph.getVertexAt(baseVertex.getPCollection());
@@ -249,20 +250,20 @@ public class MSCRPlanner {
             PCollectionImpl<?> split = splitTail.getPCollection();
             InputCollection<?> inputNode = handleSplitTarget(split);
             Vertex splitHead = graph.addVertex(inputNode, false);
-
+            
             // Divide up the node paths in the edge between the two GBK nodes so
-            // that each node is either owned by GBK1 -> newTail or newHead -> BK2.
+            // that each node is either owned by GBK1 -> newTail or newHead -> GBK2.
             for (NodePath path : e.getNodePaths()) {
               NodePath headPath = path.splitAt(split, splitHead.getPCollection());
               graph.getEdge(vertex, splitTail).addNodePath(headPath);
               graph.getEdge(splitHead, vertex).addNodePath(path);
             }
-
+            
             // Note the dependency between the vertices in the graph.
             graph.markDependency(splitHead, splitTail);
           } else if (!e.getHead().isGBK()) {
             Vertex newHead = graph.getVertexAt(e.getHead().getPCollection());
-            Map<NodePath, PCollectionImpl> splitPoints = e.getSplitPoints(true /* breakpoints only */);
+            Map<NodePath, PCollectionImpl> splitPoints = e.getSplitPoints(true /* breakpoints only  */);
             if (splitPoints.isEmpty()) {
               graph.getEdge(newHead, vertex).addAllNodePaths(e.getNodePaths());
             } else {
@@ -305,10 +306,10 @@ public class MSCRPlanner {
         }
       }
     }
-
+    
     return graph;
   }
-
+  
   private Multimap<Vertex, JobPrototype> constructJobPrototypes(List<Vertex> component) {
     Multimap<Vertex, JobPrototype> assignment = HashMultimap.create();
     List<Vertex> gbks = Lists.newArrayList();
@@ -350,8 +351,7 @@ public class MSCRPlanner {
           usedEdges.add(e);
           if (e.getHead().isInput()) {
             for (Edge ep : e.getHead().getOutgoingEdges()) {
-              // map-side output
-              if (ep.getTail().isOutput() && !usedEdges.contains(ep)) {
+              if (ep.getTail().isOutput() && !usedEdges.contains(ep)) { // map-side output
                 for (Target t : outputs.get(ep.getTail().getPCollection())) {
                   mapSideOutputPaths.putAll(t, ep.getNodePaths());
                 }
@@ -361,22 +361,20 @@ public class MSCRPlanner {
           }
         }
         JobPrototype prototype = JobPrototype.createMapReduceJob(
-            ++lastJobID, (PGroupedTableImpl) g.getPCollection(),
-            inputs, pipeline.createTempPath());
+            ++lastJobID, (PGroupedTableImpl) g.getPCollection(), inputs, pipeline.createTempPath());
         prototype.addMapSideOutputs(mapSideOutputPaths);
         assignment.put(g, prototype);
         for (Edge e : g.getIncomingEdges()) {
           assignment.put(e.getHead(), prototype);
           if (e.getHead().isInput()) {
             for (Edge ep : e.getHead().getOutgoingEdges()) {
-              // map-side output
-              if (ep.getTail().isOutput() && !assignment.containsKey(ep.getTail())) { 
+              if (ep.getTail().isOutput() && !assignment.containsKey(ep.getTail())) { // map-side output
                 assignment.put(ep.getTail(), prototype);
               }
             }
           }
         }
-
+        
         HashMultimap<Target, NodePath> outputPaths = HashMultimap.create();
         for (Edge e : g.getOutgoingEdges()) {
           Vertex output = e.getTail();
@@ -431,10 +429,10 @@ public class MSCRPlanner {
         }
       }
     }
-
+  
     return assignment;
   }
-
+  
   private InputCollection<?> handleSplitTarget(PCollectionImpl<?> splitTarget) {
     if (!outputs.containsKey(splitTarget)) {
       outputs.put(splitTarget, Sets.<Target> newHashSet());
@@ -463,5 +461,5 @@ public class MSCRPlanner {
     splitTarget.materializeAt(srcTarget);
 
     return (InputCollection<?>) pipeline.read(srcTarget);
-  }
+  }  
 }

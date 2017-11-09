@@ -36,13 +36,11 @@ import org.apache.crunch.types.Converter;
 import org.apache.crunch.types.PType;
 import org.apache.crunch.types.writable.Writables;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
-import org.apache.hadoop.hive.ql.metadata.HiveException;
+import static org.apache.hadoop.hive.metastore.MetaStoreUtils.DEFAULT_DATABASE_NAME;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hive.hcatalog.common.HCatConstants;
@@ -63,31 +61,63 @@ import javax.annotation.Nullable;
 public class HCatSource implements ReadableSource<HCatRecord> {
 
   private static final Log LOG = LogFactory.getLog(HCatSource.class);
-  private static final String DEFAULT_DATABASE_NAME = "default";
   private static final PType<HCatRecord> PTYPE = Writables.writables(HCatRecord.class);
   private Configuration newConf;
-  private boolean configured = false;
 
   private final FormatBundle<HCatInputFormat> bundle = FormatBundle.forInput(HCatInputFormat.class);
   private final String database;
   private final String table;
-  @Nullable
   private final String filter;
   private Table hiveTableCached;
 
-  private static final long DEFAULT_ESTIMATE = 1024 * 1024 * 1;
+  // Default guess at the size of the data to materialize
+  private static final long DEFAULT_ESTIMATE = 1024 * 1024 * 1024;
 
-  public HCatSource(@Nullable String database, String table) {
+  /**
+   * Creates a new instance to read from the specified {@code database} and
+   * {@code table}
+   * 
+   * @param database
+   *          the database to read from
+   * @param table
+   *          the table to read from
+   * @throw IllegalArgumentException if table is null or empty
+   */
+  public HCatSource(String database, String table) {
     this(database, table, null);
   }
 
+  /**
+   * Creates a new instance to read from the specified {@code table} and the
+   * {@link org.apache.hadoop.hive.metastore.MetaStoreUtils#DEFAULT_DATABASE_NAME
+   * default} database
+   *
+   * @param table
+   * @throw IllegalArgumentException if table is null or empty
+   */
   public HCatSource(String table) {
     this(DEFAULT_DATABASE_NAME, table);
   }
 
-  public HCatSource(@Nullable String database, String table, @Nullable String filter) {
+  /**
+   * Creates a new instance to read from the specified {@code database} and
+   * {@code table}, restricting partitions by the specified {@code filter}. If
+   * the database isn't specified it will default to the
+   * {@link org.apache.hadoop.hive.metastore.MetaStoreUtils#DEFAULT_DATABASE_NAME
+   * default} database.
+   *
+   * @param database
+   *          the database to read from
+   * @param table
+   *          the table to read from
+   * @param filter
+   *          the filter to apply to find partitions
+   * @throw IllegalArgumentException if table is null or empty
+   */
+  public HCatSource(@Nullable String database, String table, String filter) {
     this.database = Strings.isNullOrEmpty(database) ? DEFAULT_DATABASE_NAME : database;
-    this.table = Preconditions.checkNotNull(table);
+    Preconditions.checkArgument(!StringUtils.isEmpty(table), "table cannot be null or empty");
+    this.table = table;
     this.filter = filter;
   }
 
@@ -132,11 +162,10 @@ public class HCatSource implements ReadableSource<HCatRecord> {
     //
     // Our solution is to create another configuration object, and
     // compares with the original one to see what has been added.
-    if (!configured) {
+    if (newConf == null) {
       newConf = new Configuration(conf);
       try {
         HCatInputFormat.setInput(newConf, database, table, filter);
-        configured = true;
       } catch (IOException e) {
         throw new CrunchRuntimeException(e);
       }
@@ -157,7 +186,7 @@ public class HCatSource implements ReadableSource<HCatRecord> {
   public long getSize(Configuration conf) {
 
     // this is tricky. we want to derive the size by the partitions being
-    // retrieved. this aren't known until after the HCatInputFormat has
+    // retrieved. these aren't known until after the HCatInputFormat has
     // been initialized (see #configureHCatFormat). preferably, the input
     // format shouldn't be configured twice to cut down on the number of calls
     // to hive. getSize can be called before configureSource is called when the
@@ -177,27 +206,29 @@ public class HCatSource implements ReadableSource<HCatRecord> {
           String totalSize = partition.getInputStorageHandlerProperties().getProperty(StatsSetupConst.TOTAL_SIZE);
 
           if (StringUtils.isEmpty(totalSize)) {
-            size += SourceTargetHelper.getPathSize(conf, new Path(partition.getLocation()));
+            long pathSize = SourceTargetHelper.getPathSize(conf, new Path(partition.getLocation()));
+            if (pathSize == -1) {
+                LOG.info("Unable to locate directory [" + partition.getLocation() + "]; skipping");
+            // could be an hbase table, in which there won't be a size estimate
+            // if this is a valid native table partition, but no data, materialize
+            // won't find anything
+            } else if (pathSize == 0) {
+                size += DEFAULT_ESTIMATE;
+            } else {
+                size += pathSize;
+            }
           } else {
             size += Long.parseLong(totalSize);
           }
         }
         return size;
       } else {
-        System.out.println("made it in the else");
-        Table hiveTable;
-        try {
-          hiveTable = getHiveTable(conf);
-        } catch (TException e) {
-          LOG.info("Unable to determine an estimate for requested table, using default", e);
-          return DEFAULT_ESTIMATE;
-        }
+        Table hiveTable = getHiveTable(conf);
 
         // managed table will have the size on it, but should be caught as a
         // partition.size == 1
         // if the table isn't partitioned
         String totalSize = hiveTable.getParameters().get(StatsSetupConst.TOTAL_SIZE);
-        System.out.println("found size of: " + totalSize);
         if (!StringUtils.isEmpty(totalSize))
           return Long.parseLong(totalSize);
 
@@ -209,21 +240,27 @@ public class HCatSource implements ReadableSource<HCatRecord> {
         // somewhere other than the root location as defined by the table,
         // as partitions can exist elsewhere. ideally this scenario is caught
         // by the if statement with partitions > 0
-        Path path = hiveTable.getDataLocation();
-        try {
-          return SourceTargetHelper.getPathSize(conf, path);
-        } catch (IOException e) {
-          LOG.info("Unable to determine an estimate for requested table, using default", e);
-          return DEFAULT_ESTIMATE;
-        }
+        return SourceTargetHelper.getPathSize(conf, hiveTable.getDataLocation());
       }
-    } catch (IOException e) {
+    } catch (IOException | TException e) {
       LOG.info("Unable to determine an estimate for requested table, using default", e);
       return DEFAULT_ESTIMATE;
     }
   }
 
-  public HCatSchema getTableSchema(Configuration conf) throws HiveException, TException, IOException {
+  /**
+   * Extracts the {@link HCatSchema} from the specified {@code conf}.
+   * 
+   * @param conf
+   *          the conf containing the table schema
+   * @return the HCatSchema
+   *
+   * @throws TException
+   *           if there was an issue communicating with the metastore
+   * @throws IOException
+   *           if there was an issue connecting to the metastore
+   */
+  public HCatSchema getTableSchema(Configuration conf) throws TException, IOException {
     Table hiveTable = getHiveTable(conf);
     try {
       return HCatUtil.extractSchema(hiveTable);
@@ -234,19 +271,8 @@ public class HCatSource implements ReadableSource<HCatRecord> {
 
   @Override
   public long getLastModifiedAt(Configuration conf) {
-    try {
-      Table hiveTable = getHiveTable(conf);
-
-      Path path = hiveTable.getDataLocation();
-      FileSystem fs = path.getFileSystem(conf);
-      return SourceTargetHelper.getLastModifiedAt(fs, path);
-    } catch (IOException e) {
-      LOG.warn("Cannot determine last modified time for source: " + toString(), e);
-      return -1;
-    } catch (TException e) {
-      LOG.warn("Cannot determine last modified time for source: " + toString(), e);
-      return -1;
-    }
+    LOG.warn("Unable to determine the last modified time for db [" + database + "] and table [" + table + "]");
+    return -1;
   }
 
   @Override
@@ -261,7 +287,7 @@ public class HCatSource implements ReadableSource<HCatRecord> {
 
   @Override
   public int hashCode() {
-    return Objects.hashCode(table, database);
+    return Objects.hashCode(table, database, filter);
   }
 
   @Override
@@ -274,7 +300,7 @@ public class HCatSource implements ReadableSource<HCatRecord> {
       return hiveTableCached;
     }
 
-    HiveMetaStoreClient hiveMetastoreClient = HCatUtil.getHiveClient(new HiveConf(conf, HCatSource.class));
+    IMetaStoreClient hiveMetastoreClient = HCatUtil.getHiveMetastoreClient(new HiveConf(conf, HCatSource.class));
     hiveTableCached = HCatUtil.getTable(hiveMetastoreClient, database, table);
     return hiveTableCached;
   }
