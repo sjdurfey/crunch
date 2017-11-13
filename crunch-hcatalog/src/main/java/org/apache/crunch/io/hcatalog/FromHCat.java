@@ -22,13 +22,26 @@ import org.apache.hive.hcatalog.data.HCatRecord;
 
 import javax.annotation.Nullable;
 
+/**
+ * Static factory methods for creating sources to read from HCatalog.
+ *
+ * Access examples:
+ * <pre>
+ * {@code
+ *
+ *  Pipeline pipeline = new MRPipeline(this.getClass());
+ *
+ *  PCollection<HCatRecord> hcatRecords = pipeline.read(FromHCat.table("my-table"))
+ * }
+ * </pre>
+ */
 public final class FromHCat {
 
   private FromHCat() {
   }
 
   /**
-   * Creates a {@code Source<CatRecord>} instance from a hive table in the
+   * Creates a {@code Source<HCatRecord>} instance from a hive table in the
    * default database.
    *
    * @param table

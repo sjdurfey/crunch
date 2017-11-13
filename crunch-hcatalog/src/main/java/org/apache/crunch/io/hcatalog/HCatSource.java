@@ -62,7 +62,7 @@ public class HCatSource implements ReadableSource<HCatRecord> {
 
   private static final Log LOG = LogFactory.getLog(HCatSource.class);
   private static final PType<HCatRecord> PTYPE = Writables.writables(HCatRecord.class);
-  private Configuration newConf;
+  private Configuration hcatConf;
 
   private final FormatBundle<HCatInputFormat> bundle = FormatBundle.forInput(HCatInputFormat.class);
   private final String database;
@@ -152,7 +152,7 @@ public class HCatSource implements ReadableSource<HCatRecord> {
     }
   }
 
-  private Configuration configureHCatFormat(Configuration conf) {
+  private void configureHCatFormat(Configuration conf) {
     // It is tricky to get the HCatInputFormat configured correctly.
     //
     // The first parameter of setInput() is for both input and output.
@@ -162,15 +162,15 @@ public class HCatSource implements ReadableSource<HCatRecord> {
     //
     // Our solution is to create another configuration object, and
     // compares with the original one to see what has been added.
-    if (newConf == null) {
-      newConf = new Configuration(conf);
+    if (hcatConf == null) {
+      hcatConf = new Configuration(conf);
       try {
-        HCatInputFormat.setInput(newConf, database, table, filter);
+        HCatInputFormat.setInput(hcatConf, database, table, filter);
       } catch (IOException e) {
         throw new CrunchRuntimeException(e);
       }
 
-      for (Map.Entry<String, String> e : newConf) {
+      for (Map.Entry<String, String> e : hcatConf) {
         String key = e.getKey();
         String value = e.getValue();
         if (!Objects.equal(value, conf.get(key))) {
@@ -178,8 +178,6 @@ public class HCatSource implements ReadableSource<HCatRecord> {
         }
       }
     }
-
-    return newConf;
   }
 
   @Override
@@ -193,14 +191,13 @@ public class HCatSource implements ReadableSource<HCatRecord> {
     // collection is being materialized or a groupby has been performed. so, the
     // InputJobInfo, which has the partitions, won't be present when this
     // happens. so, configure here or in configureSource just once.
-    Configuration configuration = configureHCatFormat(conf);
-
+    configureHCatFormat(conf);
     try {
-      InputJobInfo inputJobInfo = (InputJobInfo) HCatUtil
-          .deserialize(configuration.get(HCatConstants.HCAT_KEY_JOB_INFO));
+      InputJobInfo inputJobInfo = (InputJobInfo) HCatUtil.deserialize(hcatConf.get(HCatConstants.HCAT_KEY_JOB_INFO));
       List<PartInfo> partitions = inputJobInfo.getPartitions();
 
       if (partitions.size() > 0) {
+        LOG.debug("Found [" + partitions.size() + "] partitions to read");
         long size = 0;
         for (final PartInfo partition : partitions) {
           String totalSize = partition.getInputStorageHandlerProperties().getProperty(StatsSetupConst.TOTAL_SIZE);
@@ -208,14 +205,16 @@ public class HCatSource implements ReadableSource<HCatRecord> {
           if (StringUtils.isEmpty(totalSize)) {
             long pathSize = SourceTargetHelper.getPathSize(conf, new Path(partition.getLocation()));
             if (pathSize == -1) {
-                LOG.info("Unable to locate directory [" + partition.getLocation() + "]; skipping");
-            // could be an hbase table, in which there won't be a size estimate
-            // if this is a valid native table partition, but no data, materialize
-            // won't find anything
+              LOG.info("Unable to locate directory [" + partition.getLocation() + "]; skipping");
+              // could be an hbase table, in which there won't be a size
+              // estimate
+              // if this is a valid native table partition, but no data,
+              // materialize
+              // won't find anything
             } else if (pathSize == 0) {
-                size += DEFAULT_ESTIMATE;
+              size += DEFAULT_ESTIMATE;
             } else {
-                size += pathSize;
+              size += pathSize;
             }
           } else {
             size += Long.parseLong(totalSize);
@@ -224,6 +223,7 @@ public class HCatSource implements ReadableSource<HCatRecord> {
         return size;
       } else {
         Table hiveTable = getHiveTable(conf);
+        LOG.debug("Attempting to get table size from table properties");
 
         // managed table will have the size on it, but should be caught as a
         // partition.size == 1
@@ -240,10 +240,11 @@ public class HCatSource implements ReadableSource<HCatRecord> {
         // somewhere other than the root location as defined by the table,
         // as partitions can exist elsewhere. ideally this scenario is caught
         // by the if statement with partitions > 0
+        LOG.debug("Unable to find size on table properties, attempting to get it from table data location");
         return SourceTargetHelper.getPathSize(conf, hiveTable.getDataLocation());
       }
     } catch (IOException | TException e) {
-      LOG.info("Unable to determine an estimate for requested table, using default", e);
+      LOG.info("Unable to determine an estimate for requested table [" + table + "], using default", e);
       return DEFAULT_ESTIMATE;
     }
   }
@@ -262,11 +263,7 @@ public class HCatSource implements ReadableSource<HCatRecord> {
    */
   public HCatSchema getTableSchema(Configuration conf) throws TException, IOException {
     Table hiveTable = getHiveTable(conf);
-    try {
-      return HCatUtil.extractSchema(hiveTable);
-    } catch (HCatException e) {
-      throw new CrunchRuntimeException(e);
-    }
+    return HCatUtil.extractSchema(hiveTable);
   }
 
   @Override
@@ -292,7 +289,11 @@ public class HCatSource implements ReadableSource<HCatRecord> {
 
   @Override
   public String toString() {
-    return new ToStringBuilder(this).append(database).append(table).append(filter).toString();
+    return new ToStringBuilder(this)
+            .append("database", database)
+            .append("table", table)
+            .append("filter", filter)
+            .toString();
   }
 
   private Table getHiveTable(Configuration conf) throws IOException, TException {
@@ -307,7 +308,8 @@ public class HCatSource implements ReadableSource<HCatRecord> {
 
   @Override
   public Iterable<HCatRecord> read(Configuration conf) throws IOException {
-    return new HCatRecordDataIterable(bundle, configureHCatFormat(conf));
+    configureHCatFormat(conf);
+    return new HCatRecordDataIterable(bundle, hcatConf);
   }
 
   @Override

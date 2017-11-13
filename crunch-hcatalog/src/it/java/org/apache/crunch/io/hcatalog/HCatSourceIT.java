@@ -124,7 +124,7 @@ public class HCatSourceIT extends CrunchTestSupport {
     createUnpartitionedTable(tableName, TableType.MANAGED_TABLE, null);
 
     Pipeline p = new MRPipeline(HCatSourceIT.class, conf);
-    HCatSource src = new HCatSource(tableName);
+    HCatSource src = (HCatSource) FromHCat.table(tableName);
     HCatSchema schema = src.getTableSchema(p.getConfiguration());
     PCollection<HCatRecord> records = p.read(src);
     List<Pair<Integer, String>> mat = Lists.newArrayList(
@@ -158,7 +158,7 @@ public class HCatSourceIT extends CrunchTestSupport {
       results.add(fn.map(iterator.next()));
     }
 
-    assertEquals(ImmutableList.of(Pair.of(29, "indiana"), Pair.of(17, "josh")), results);
+    assertEquals(ImmutableList.of(Pair.of(17, "josh"), Pair.of(29, "indiana")), results);
     p.done();
   }
 
@@ -184,7 +184,7 @@ public class HCatSourceIT extends CrunchTestSupport {
       results.add(fn.map(record));
     }
 
-    assertEquals(ImmutableList.of(Pair.of(29, "indiana"), Pair.of(17, "josh")), results);
+    assertEquals(ImmutableList.of(Pair.of(17, "josh"), Pair.of(29, "indiana")), results);
     p.done();
   }
 
@@ -224,7 +224,7 @@ public class HCatSourceIT extends CrunchTestSupport {
       results.add(fn.map(record));
     }
     assertEquals(
-        ImmutableList.of(Pair.of(29, "indiana"), Pair.of(17, "josh"), Pair.of(17, "ohio"), Pair.of(42, "jackie")),
+        ImmutableList.of(Pair.of(17, "josh"), Pair.of(29, "indiana"), Pair.of(42, "jackie"), Pair.of(17, "ohio")),
         results);
     p.done();
   }
