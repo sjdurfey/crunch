@@ -19,8 +19,6 @@ package org.apache.crunch.io.hcatalog;
 
 import com.google.common.base.Objects;
 import com.google.common.base.Strings;
-import com.google.common.collect.Maps;
-import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.builder.ToStringBuilder;
 import org.apache.crunch.CrunchRuntimeException;
 import org.apache.crunch.SourceTarget;
@@ -200,11 +198,8 @@ public class HCatTarget implements MapReduceTarget {
 
   @Override
   public String toString() {
-    return new ToStringBuilder(this)
-            .append("database", info.getDatabaseName())
-            .append("table", info.getTableName())
-            .append("partition", info.getPartitionValues())
-            .toString();
+    return new ToStringBuilder(this).append("database", info.getDatabaseName()).append("table", info.getTableName())
+        .append("partition", info.getPartitionValues()).toString();
   }
 
   @Override
