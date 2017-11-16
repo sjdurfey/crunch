@@ -198,8 +198,11 @@ public class HCatTarget implements MapReduceTarget {
 
   @Override
   public String toString() {
-    return new ToStringBuilder(this).append("database", info.getDatabaseName()).append("table", info.getTableName())
-        .append("partition", info.getPartitionValues()).toString();
+    return new ToStringBuilder(this)
+            .append("database", info.getDatabaseName())
+            .append("table", info.getTableName())
+            .append("partition", info.getPartitionValues())
+            .toString();
   }
 
   @Override
