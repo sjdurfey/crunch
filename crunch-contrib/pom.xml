@@ -36,6 +36,11 @@ under the License.
     </dependency>
 
     <dependency>
+      <groupId>org.apache.crunch</groupId>
+      <artifactId>crunch-hcatalog</artifactId>
+    </dependency>
+
+    <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
     </dependency>
@@ -56,6 +61,12 @@ under the License.
       <groupId>com.h2database</groupId>
       <artifactId>h2</artifactId>
       <version>1.3.168</version>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.thrift</groupId>
+      <artifactId>libthrift</artifactId>
       <scope>test</scope>
     </dependency>
   

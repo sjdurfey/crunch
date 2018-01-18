@@ -63,16 +63,16 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
 
   private static final Logger LOGGER = LoggerFactory.getLogger(HCatSourceTarget.class);
   private static final PType<HCatRecord> PTYPE = Writables.writables(HCatRecord.class);
-  private Configuration hcatConf;
+  protected Configuration hcatConf;
 
-  private final FormatBundle<HCatInputFormat> bundle = FormatBundle.forInput(HCatInputFormat.class);
+  protected final FormatBundle<HCatInputFormat> bundle = FormatBundle.forInput(HCatInputFormat.class);
   private final String database;
   private final String table;
   private final String filter;
   private Table hiveTableCached;
 
   // Default guess at the size of the data to materialize
-  private static final long DEFAULT_ESTIMATE = 1024 * 1024 * 1024;
+  private static final long DEFAULT_TABLE_SIZE_ESTIMATE = 1024 * 1024 * 1024;
 
   /**
    * Creates a new instance to read from the specified {@code table} and the
@@ -223,7 +223,7 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
               // estimate if this is a valid native table partition, but no
               // data, materialize won't find anything
             } else if (pathSize == 0) {
-              size += DEFAULT_ESTIMATE;
+              size += DEFAULT_TABLE_SIZE_ESTIMATE;
             } else {
               size += pathSize;
             }
@@ -254,9 +254,9 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
             hiveTable.getTableName(), hiveTable.getDataLocation());
         return SourceTargetHelper.getPathSize(conf, hiveTable.getDataLocation());
       }
-    } catch (IOException | TException e) {
+    } catch (IOException e) {
       LOGGER.info("Unable to determine an estimate for requested table [{}], using default", table, e);
-      return DEFAULT_ESTIMATE;
+      return DEFAULT_TABLE_SIZE_ESTIMATE;
     }
   }
 
@@ -267,12 +267,10 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
    *          the conf containing the table schema
    * @return the HCatSchema
    *
-   * @throws TException
-   *           if there was an issue communicating with the metastore
    * @throws IOException
    *           if there was an issue connecting to the metastore
    */
-  public HCatSchema getTableSchema(Configuration conf) throws TException, IOException {
+  public HCatSchema getTableSchema(Configuration conf) throws IOException {
     Table hiveTable = getHiveTable(conf);
     return HCatUtil.extractSchema(hiveTable);
   }
@@ -304,13 +302,19 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
         .toString();
   }
 
-  private Table getHiveTable(Configuration conf) throws IOException, TException {
+  protected Table getHiveTable(Configuration conf) throws IOException {
     if (hiveTableCached != null) {
       return hiveTableCached;
     }
 
-    IMetaStoreClient hiveMetastoreClient = HCatUtil.getHiveMetastoreClient(new HiveConf(conf, HCatSourceTarget.class));
-    hiveTableCached = HCatUtil.getTable(hiveMetastoreClient, database, table);
+    IMetaStoreClient hiveMetastoreClient = null;
+    try {
+      hiveMetastoreClient = HCatUtil.getHiveMetastoreClient(new HiveConf(conf, HCatSourceTarget.class));
+      hiveTableCached = HCatUtil.getTable(hiveMetastoreClient, database, table);
+    } catch (TException e) {
+      throw new IOException(e);
+    }
+
     return hiveTableCached;
   }
 

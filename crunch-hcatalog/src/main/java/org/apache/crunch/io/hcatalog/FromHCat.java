@@ -26,12 +26,25 @@ import javax.annotation.Nullable;
  * Static factory methods for creating sources to read from HCatalog.
  *
  * Access examples:
+ * 
  * <pre>
  * {@code
  *
  *  Pipeline pipeline = new MRPipeline(this.getClass());
  *
  *  PCollection<HCatRecord> hcatRecords = pipeline.read(FromHCat.table("my-table"))
+ * }
+ * </pre>
+ *
+ * To read data from a HCatalog as avro records:
+ * 
+ * <pre>
+ * {
+ *   &#64;code
+ *
+ *   Pipeline pipeline = new MRPipeline(this.getClass());
+ *
+ *   PCollection<MyClass> records = FromHCat.tableAsAvro(pipeline, "my-table", MyClass.class);
  * }
  * </pre>
  */
@@ -46,7 +59,8 @@ public final class FromHCat {
    *
    * @param table
    *          table name
-   * @throw IllegalArgumentException if table is null or empty
+   * @throws IllegalArgumentException
+   *           if table is null or empty
    */
   public static Source<HCatRecord> table(String table) {
     return new HCatSourceTarget(table);
@@ -59,9 +73,10 @@ public final class FromHCat {
    *          database name
    * @param table
    *          table name
-   * @throw IllegalArgumentException if table is null or empty
+   * @throws IllegalArgumentException
+   *           if table is null or empty
    */
-  public static Source<HCatRecord> table(String database, String table) {
+  public static Source<HCatRecord> table(@Nullable String database, String table) {
     return new HCatSourceTarget(database, table);
   }
 
@@ -77,9 +92,10 @@ public final class FromHCat {
    * @param filter
    *          a custom filter criteria, e.g. specify partitions by
    *          {@code 'date= "20140424"'} or {@code 'date < "20140424"'}
-   * @throw IllegalArgumentException if table is null or empty
+   * @throws IllegalArgumentException
+   *           if table is null or empty
    */
-  public static Source<HCatRecord> table(@Nullable String database, String table, String filter) {
+  public static Source<HCatRecord> table(@Nullable String database, String table, @Nullable String filter) {
     return new HCatSourceTarget(database, table, filter);
   }
 }

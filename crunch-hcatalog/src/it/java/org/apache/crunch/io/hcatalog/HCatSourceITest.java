@@ -19,7 +19,22 @@ package org.apache.crunch.io.hcatalog;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import junit.framework.Assert;
+import org.apache.avro.Schema;
+import org.apache.avro.file.DataFileWriter;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.IndexedRecord;
+import org.apache.avro.io.BinaryEncoder;
+import org.apache.avro.io.DatumReader;
+import org.apache.avro.io.DatumWriter;
+import org.apache.avro.io.Decoder;
+import org.apache.avro.io.EncoderFactory;
+import org.apache.avro.specific.SpecificData;
+import org.apache.avro.specific.SpecificDatumReader;
+import org.apache.avro.specific.SpecificDatumWriter;
+import org.apache.avro.util.Utf8;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.crunch.PCollection;
 import org.apache.crunch.PTable;
 import org.apache.crunch.Pair;
@@ -27,7 +42,10 @@ import org.apache.crunch.Pipeline;
 import org.apache.crunch.ReadableData;
 import org.apache.crunch.impl.mr.MRPipeline;
 import org.apache.crunch.test.CrunchTestSupport;
+import org.apache.crunch.test.Player;
+import org.apache.crunch.test.Position;
 import org.apache.crunch.test.TemporaryPath;
+import org.apache.crunch.test.md5;
 import org.apache.crunch.types.avro.Avros;
 import org.apache.crunch.types.writable.Writables;
 import org.apache.hadoop.conf.Configuration;
@@ -39,16 +57,22 @@ import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hive.hbase.ColumnMappings;
+import org.apache.hadoop.hive.hbase.DefaultHBaseKeyFactory;
+import org.apache.hadoop.hive.hbase.HBaseSerDe;
+import org.apache.hadoop.hive.hbase.HBaseSerDeHelper;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
-import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.mapreduce.TaskInputOutputContext;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hive.hcatalog.data.DefaultHCatRecord;
 import org.apache.hive.hcatalog.data.HCatRecord;
 import org.apache.hive.hcatalog.data.schema.HCatSchema;
+import org.apache.thrift.TException;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Rule;
@@ -57,15 +81,25 @@ import org.junit.rules.TestName;
 import org.mockito.Mockito;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.UUID;
 
+import javax.annotation.Nullable;
+
+import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.when;
 
 public class HCatSourceITest extends CrunchTestSupport {
@@ -190,7 +224,6 @@ public class HCatSourceITest extends CrunchTestSupport {
 
     Pipeline p = new MRPipeline(HCatSourceITest.class, conf);
     String filter = "timestamp=\"" + part1Value + "\" or timestamp=\"" + part2Value + "\"";
-    // HCatSource src = new HCatSource("default", tableName, filter);
     HCatSourceTarget src = (HCatSourceTarget) FromHCat.table("default", tableName, filter);
 
     HCatSchema schema = src.getTableSchema(p.getConfiguration());
@@ -305,7 +338,7 @@ public class HCatSourceITest extends CrunchTestSupport {
 
   // writes data to the specified location and ensures the directory exists
   // prior to writing
-  private Path writeDataToHdfs(String data, Path location, Configuration conf) throws IOException {
+  private static Path writeDataToHdfs(String data, Path location, Configuration conf) throws IOException {
     FileSystem fs = location.getFileSystem(conf);
     Path writeLocation = new Path(location, UUID.randomUUID().toString());
     fs.mkdirs(location);
@@ -316,5 +349,92 @@ public class HCatSourceITest extends CrunchTestSupport {
     }
 
     return writeLocation;
+  }
+
+  private org.apache.hadoop.hive.ql.metadata.Table createAvroBackedTable(String tableName, Path tableRootLocation,
+      Map<String, String> tableProps) throws IOException, HiveException, TException {
+
+    String serdeLib = "org.apache.hadoop.hive.serde2.avro.AvroSerDe";
+    String inputFormat = "org.apache.hadoop.hive.ql.io.avro.AvroContainerInputFormat";
+    String outputFormat = "org.apache.hadoop.hive.ql.io.avro.AvroContainerOutputFormat";
+
+    return createTable(tableName, tableRootLocation, tableProps, new HashMap<String, String>(), serdeLib, inputFormat,
+        outputFormat, new ArrayList<FieldSchema>());
+  }
+
+  private org.apache.hadoop.hive.ql.metadata.Table createTable(String tableName, Path tableRootLocation,
+      Map<String, String> tableProps, Map<String, String> serDeParams, String serdeLib, String inputFormatClass,
+      String outputFormatClass, List<FieldSchema> fields) throws IOException, HiveException, TException {
+
+    org.apache.hadoop.hive.ql.metadata.Table tbl = new org.apache.hadoop.hive.ql.metadata.Table("default", tableName);
+    tbl.setOwner(UserGroupInformation.getCurrentUser().getShortUserName());
+    tbl.setTableType(TableType.EXTERNAL_TABLE);
+
+    if (tableRootLocation != null)
+      tbl.setDataLocation(tableRootLocation);
+
+    tbl.setSerializationLib(serdeLib);
+
+    if (StringUtils.isNotBlank(inputFormatClass))
+      tbl.setInputFormatClass(inputFormatClass);
+
+    if (StringUtils.isNotBlank(outputFormatClass))
+      tbl.setOutputFormatClass(outputFormatClass);
+
+    for (final Map.Entry<String, String> config : tableProps.entrySet()) {
+      tbl.setProperty(config.getKey(), config.getValue());
+    }
+
+    for (final Map.Entry<String, String> config : serDeParams.entrySet()) {
+      tbl.setSerdeParam(config.getKey(), config.getValue());
+    }
+
+    if (!fields.isEmpty())
+      tbl.setFields(fields);
+
+    client.createTable(tbl.getTTable());
+
+    return tbl;
+  }
+
+  private <T extends IndexedRecord> void writeDatum(T datum, File location) throws IOException {
+    // closed by the data file writer
+    SpecificDatumWriter<T> writer = new SpecificDatumWriter<>();
+    try (DataFileWriter<T> fileWriter = new DataFileWriter<>(writer)) {
+      fileWriter.create(datum.getSchema(), location);
+      fileWriter.append(datum);
+    }
+  }
+
+  private void moveDatumsToHdfs(File src, Path dest, Configuration conf) throws IOException {
+    FileSystem fs = dest.getFileSystem(conf);
+    fs.mkdirs(dest);
+    fs.copyFromLocalFile(new Path(src.toString()), dest);
+  }
+
+  // compareFixed indicates if the fixed type should be compared. the test
+  // generates
+  // random bytes, so if the test generates the bytes itself, compare. if
+  // reading
+  // from disk, don't compare
+  private void assertModel(Player actual, Player expected, boolean compareFixed) {
+    if (compareFixed)
+      assertThat(actual.getMd5(), is(expected.getMd5()));
+    assertThat(actual.getBattingAvg(), is(expected.getBattingAvg()));
+    assertThat(actual.getHomeruns(), is(expected.getHomeruns()));
+    assertThat(actual.getName(), is(expected.getName()));
+    assertThat(actual.getPosition(), is(expected.getPosition()));
+
+    assertMaps(actual.getTeamLocation(), expected.getTeamLocation());
+    assertThat(actual.getPreviousTeams().size(), is(expected.getPreviousTeams().size()));
+    assertTrue(actual.getPreviousTeams().containsAll(expected.getPreviousTeams()));
+  }
+
+  private void assertMaps(Map<CharSequence, CharSequence> actual, Map<CharSequence, CharSequence> expected) {
+    assertThat(actual.size(), is(expected.size()));
+    for (final Map.Entry<CharSequence, CharSequence> entry : expected.entrySet()) {
+      CharSequence o = actual.get((entry.getKey()));
+      assertThat(o, is(entry.getValue()));
+    }
   }
 }
