@@ -20,6 +20,7 @@ package org.apache.crunch.io.hcatalog;
 import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
+import org.apache.avro.Schema;
 import org.apache.commons.lang.builder.ToStringBuilder;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.crunch.CrunchRuntimeException;
@@ -40,6 +41,8 @@ import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.ql.metadata.Table;
+import org.apache.hadoop.hive.serde2.avro.AvroSerdeException;
+import org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hive.hcatalog.common.HCatConstants;
 import org.apache.hive.hcatalog.common.HCatUtil;
@@ -57,6 +60,8 @@ import static org.apache.hadoop.hive.metastore.MetaStoreUtils.DEFAULT_DATABASE_N
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
 import javax.annotation.Nullable;
 
 public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget<HCatRecord> {

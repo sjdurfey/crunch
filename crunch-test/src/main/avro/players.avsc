@@ -1,0 +1,51 @@
+{
+	"type": "record",
+	"name": "Players",
+	"namespace": "org.apache.crunch.test",
+	"fields": [{
+		"name": "players",
+		"type": {
+			"type": "array",
+			"items": {
+				"type": "record",
+				"name": "Player",
+				"fields": [{
+					"name": "position",
+					"type": {
+						"type": "enum",
+						"name": "Position",
+						"symbols": ["FirstBase", "SecondBase", "ThirdBase", "LeftField", "RightField", "CenterField", "Catcher", "Pitcher"]
+					}
+				}, {
+					"name": "name",
+					"type": "string"
+				}, {
+					"name": "homeruns",
+					"type": "int"
+				}, {
+					"name": "battingAvg",
+					"type": "double"
+				}, {
+					"name": "teamLocation",
+					"type": {
+						"type": "map",
+						"values": "string"
+					}
+				}, {
+					"name": "previousTeams",
+					"type": {
+						"type": "array",
+						"items": "string"
+					}
+				}, {
+                    "name": "md5",
+                    "type": {
+                        "type": "fixed",
+                        "size": 16,
+                        "name": "md5"
+                    }
+                }]
+			}
+		}
+	}]
+}

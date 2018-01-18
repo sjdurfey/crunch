@@ -19,6 +19,10 @@ package org.apache.crunch.io.hcatalog;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.io.BinaryEncoder;
+import org.apache.avro.io.EncoderFactory;
+import org.apache.avro.specific.SpecificDatumWriter;
 import org.apache.commons.io.IOUtils;
 import org.apache.crunch.PCollection;
 import org.apache.crunch.PTable;
@@ -27,6 +31,8 @@ import org.apache.crunch.Pipeline;
 import org.apache.crunch.ReadableData;
 import org.apache.crunch.impl.mr.MRPipeline;
 import org.apache.crunch.test.CrunchTestSupport;
+import org.apache.crunch.test.Player;
+import org.apache.crunch.test.Position;
 import org.apache.crunch.test.TemporaryPath;
 import org.apache.crunch.types.avro.Avros;
 import org.apache.crunch.types.writable.Writables;
@@ -39,10 +45,13 @@ import org.apache.hadoop.hbase.HBaseTestingUtility;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hive.hbase.ColumnMappings;
+import org.apache.hadoop.hive.hbase.DefaultHBaseKeyFactory;
+import org.apache.hadoop.hive.hbase.HBaseSerDe;
+import org.apache.hadoop.hive.hbase.HBaseSerDeHelper;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
-import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.mapreduce.TaskInputOutputContext;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -57,15 +66,20 @@ import org.junit.rules.TestName;
 import org.mockito.Mockito;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
 import static org.mockito.Mockito.when;
 
 public class HCatSourceITest extends CrunchTestSupport {
@@ -190,7 +204,6 @@ public class HCatSourceITest extends CrunchTestSupport {
 
     Pipeline p = new MRPipeline(HCatSourceITest.class, conf);
     String filter = "timestamp=\"" + part1Value + "\" or timestamp=\"" + part2Value + "\"";
-    // HCatSource src = new HCatSource("default", tableName, filter);
     HCatSourceTarget src = (HCatSourceTarget) FromHCat.table("default", tableName, filter);
 
     HCatSchema schema = src.getTableSchema(p.getConfiguration());
@@ -305,7 +318,7 @@ public class HCatSourceITest extends CrunchTestSupport {
 
   // writes data to the specified location and ensures the directory exists
   // prior to writing
-  private Path writeDataToHdfs(String data, Path location, Configuration conf) throws IOException {
+  private static Path writeDataToHdfs(String data, Path location, Configuration conf) throws IOException {
     FileSystem fs = location.getFileSystem(conf);
     Path writeLocation = new Path(location, UUID.randomUUID().toString());
     fs.mkdirs(location);

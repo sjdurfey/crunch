@@ -26,6 +26,7 @@ import javax.annotation.Nullable;
  * Static factory methods for creating sources to read from HCatalog.
  *
  * Access examples:
+ * 
  * <pre>
  * {@code
  *

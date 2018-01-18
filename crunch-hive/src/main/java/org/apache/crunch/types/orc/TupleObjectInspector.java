@@ -104,7 +104,7 @@ public class TupleObjectInspector<T extends Tuple> extends StructObjectInspector
 
     @Override
     public int getFieldID() {
-      return -1;
+      return index;
     }
 
     @Override
