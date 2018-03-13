@@ -17,7 +17,12 @@
  */
 package org.apache.crunch.io.hcatalog;
 
+import org.apache.avro.specific.SpecificRecord;
+import org.apache.crunch.PCollection;
+import org.apache.crunch.Pipeline;
 import org.apache.crunch.Source;
+import org.apache.crunch.io.hcatalog.avro.HCatToAvroFn;
+import org.apache.crunch.types.avro.Avros;
 import org.apache.hive.hcatalog.data.HCatRecord;
 
 import javax.annotation.Nullable;
@@ -35,6 +40,18 @@ import javax.annotation.Nullable;
  *  PCollection<HCatRecord> hcatRecords = pipeline.read(FromHCat.table("my-table"))
  * }
  * </pre>
+ *
+ * To read data from a HCatalog as avro records:
+ * 
+ * <pre>
+ * {
+ *   &#64;code
+ *
+ *   Pipeline pipeline = new MRPipeline(this.getClass());
+ *
+ *   PCollection<MyClass> records = FromHCat.tableAsAvro(pipeline, "my-table", MyClass.class);
+ * }
+ * </pre>
  */
 public final class FromHCat {
 
@@ -47,7 +64,8 @@ public final class FromHCat {
    *
    * @param table
    *          table name
-   * @throw IllegalArgumentException if table is null or empty
+   * @throws IllegalArgumentException
+   *           if table is null or empty
    */
   public static Source<HCatRecord> table(String table) {
     return new HCatSourceTarget(table);
@@ -60,9 +78,10 @@ public final class FromHCat {
    *          database name
    * @param table
    *          table name
-   * @throw IllegalArgumentException if table is null or empty
+   * @throws IllegalArgumentException
+   *           if table is null or empty
    */
-  public static Source<HCatRecord> table(String database, String table) {
+  public static Source<HCatRecord> table(@Nullable String database, String table) {
     return new HCatSourceTarget(database, table);
   }
 
@@ -78,9 +97,98 @@ public final class FromHCat {
    * @param filter
    *          a custom filter criteria, e.g. specify partitions by
    *          {@code 'date= "20140424"'} or {@code 'date < "20140424"'}
-   * @throw IllegalArgumentException if table is null or empty
+   * @throws IllegalArgumentException
+   *           if table is null or empty
    */
-  public static Source<HCatRecord> table(@Nullable String database, String table, String filter) {
+  public static Source<HCatRecord> table(@Nullable String database, String table, @Nullable String filter) {
     return new HCatSourceTarget(database, table, filter);
+  }
+
+  /**
+   * Reads a {@link PCollection} of the specified {@code avroClazz} from the
+   * requested hive {@code table}. By default reads from the 'default' hive
+   * database.
+   * 
+   * The provided {@code avroClazz} MUST be compatible with the
+   * {@link HCatRecord} representation of the data (e.g. the table being read
+   * from should be an avro backed table). If the {@code avroClazz} is not
+   * compatible then the outcome is undefined.
+   * 
+   * @param pipeline
+   *          the pipeline to use for reading
+   * @param table
+   *          the hive table to read from
+   * @param avroClazz
+   *          the avro class to convert into
+   * @param <T>
+   *          the type, must extend {@link SpecificRecord}
+   * @return a {@link PCollection} of the specified {@code avroClazz}
+   * @throws IllegalArgumentException
+   *           if table is null or empty
+   */
+  public static <T extends SpecificRecord> PCollection<T> tableAsAvro(Pipeline pipeline, String table,
+      Class<T> avroClazz) {
+    return tableAsAvro(pipeline, null, table, avroClazz);
+  }
+
+  /**
+   * Reads a {@link PCollection} of the specified {@code avroClazz} from the
+   * requested hive {@code table} and {@code database}.
+   * 
+   * The provided {@code avroClazz} MUST be compatible with the
+   * {@link HCatRecord} representation of the data (e.g. the table being read
+   * from should be an avro backed table). If the {@code avroClazz} is not
+   * compatible then the outcome is undefined.
+   * 
+   * @param pipeline
+   *          the pipeline to use for reading
+   * @param database
+   *          the database to use to find the table
+   * @param table
+   *          the hive table to read from
+   * @param avroClazz
+   *          the avro class to convert into
+   * @param <T>
+   *          the type, must extend {@link SpecificRecord}
+   * @return a {@link PCollection} of the specified {@code avroClazz}
+   * @throws IllegalArgumentException
+   *           if table is null or empty
+   */
+  public static <T extends SpecificRecord> PCollection<T> tableAsAvro(Pipeline pipeline, @Nullable  String database, String table,
+      Class<T> avroClazz) {
+    return tableAsAvro(pipeline, database, table, null, avroClazz);
+  }
+
+  /**
+   * Reads a {@link PCollection} of the specified {@code avroClazz} from the
+   * requested hive {@code table} and {@code database}. The returned data will
+   * be limited by the {@code filter}. If the {@code filter} is empty, then no
+   * restrictions will be placed on what is returned.
+   * 
+   * The provided {@code avroClazz} MUST be compatible with the
+   * {@link HCatRecord} representation of the data (e.g. the table being read
+   * from should be an avro backed table). If the {@code avroClazz} is not
+   * compatible then the outcome is undefined.
+   *
+   * @param pipeline
+   *          the pipeline to use for reading
+   * @param database
+   *          the database to use to find the table
+   * @param table
+   *          the hive table to read from
+   * @param filter
+   *          the filter to limit the data (or not, if null)
+   * @param avroClazz
+   *          the avro class to convert into
+   * @param <T>
+   *          the type, must extend {@link SpecificRecord}
+   * @return a {@link PCollection} of the specified {@code avroClazz}
+   * @throws IllegalArgumentException
+   *           if table is null or empty
+   */
+  public static <T extends SpecificRecord> PCollection<T> tableAsAvro(Pipeline pipeline, @Nullable String database,
+      String table, @Nullable String filter, Class<T> avroClazz) {
+    return pipeline.read(table(database, table, filter)).parallelDo(new HCatToAvroFn<>(avroClazz),
+        Avros.records(avroClazz));
   }
 }

@@ -40,6 +40,8 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
+import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.serde2.avro.AvroSerdeException;
 import org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils;
@@ -68,7 +70,20 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
 
   private static final Logger LOGGER = LoggerFactory.getLogger(HCatSourceTarget.class);
   private static final PType<HCatRecord> PTYPE = Writables.writables(HCatRecord.class);
-  private Configuration hcatConf;
+  protected Configuration hcatConf;
+
+  /**
+   * The configuration property for setting the avro schema from the source hive
+   * table
+   */
+  public static final String AVRO_TABLE_SCHEMA_PROP = "hcat.avro.table.schema";
+
+  /**
+   * The configuration property for setting a custom
+   * {@link org.apache.crunch.io.hcatalog.avro.HCatReaderWriterFactory} when
+   * converting {@link HCatRecord}'s to avro
+   */
+  public static final String DATUM_READER_WRITER_FACTORY_PROP = "crunch.avro.factory";
 
   private final FormatBundle<HCatInputFormat> bundle = FormatBundle.forInput(HCatInputFormat.class);
   private final String database;
@@ -77,7 +92,7 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
   private Table hiveTableCached;
 
   // Default guess at the size of the data to materialize
-  private static final long DEFAULT_ESTIMATE = 1024 * 1024 * 1024;
+  private static final long DEFAULT_TABLE_SIZE_ESTIMATE = 1024 * 1024 * 1024;
 
   /**
    * Creates a new instance to read from the specified {@code table} and the
@@ -157,6 +172,12 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
       hcatConf = configureHCatFormat(jobConf, bundle, database, table, filter);
     }
 
+    try {
+      addAvroSchemaToFormatBundle(hcatConf);
+    } catch (TException e) {
+      throw new CrunchRuntimeException(e);
+    }
+
     if (inputId == -1) {
       job.setMapperClass(CrunchMapper.class);
       job.setInputFormatClass(bundle.getFormatClass());
@@ -228,7 +249,7 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
               // estimate if this is a valid native table partition, but no
               // data, materialize won't find anything
             } else if (pathSize == 0) {
-              size += DEFAULT_ESTIMATE;
+              size += DEFAULT_TABLE_SIZE_ESTIMATE;
             } else {
               size += pathSize;
             }
@@ -259,9 +280,9 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
             hiveTable.getTableName(), hiveTable.getDataLocation());
         return SourceTargetHelper.getPathSize(conf, hiveTable.getDataLocation());
       }
-    } catch (IOException | TException e) {
+    } catch (IOException e) {
       LOGGER.info("Unable to determine an estimate for requested table [{}], using default", table, e);
-      return DEFAULT_ESTIMATE;
+      return DEFAULT_TABLE_SIZE_ESTIMATE;
     }
   }
 
@@ -272,12 +293,10 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
    *          the conf containing the table schema
    * @return the HCatSchema
    *
-   * @throws TException
-   *           if there was an issue communicating with the metastore
    * @throws IOException
    *           if there was an issue connecting to the metastore
    */
-  public HCatSchema getTableSchema(Configuration conf) throws TException, IOException {
+  public HCatSchema getTableSchema(Configuration conf) throws IOException {
     Table hiveTable = getHiveTable(conf);
     return HCatUtil.extractSchema(hiveTable);
   }
@@ -309,14 +328,41 @@ public class HCatSourceTarget extends HCatTarget implements ReadableSourceTarget
         .toString();
   }
 
-  private Table getHiveTable(Configuration conf) throws IOException, TException {
+  private Table getHiveTable(Configuration conf) throws IOException {
     if (hiveTableCached != null) {
       return hiveTableCached;
     }
 
-    IMetaStoreClient hiveMetastoreClient = HCatUtil.getHiveMetastoreClient(new HiveConf(conf, HCatSourceTarget.class));
-    hiveTableCached = HCatUtil.getTable(hiveMetastoreClient, database, table);
+    IMetaStoreClient hiveMetastoreClient = null;
+    try {
+      hiveMetastoreClient = HCatUtil.getHiveMetastoreClient(new HiveConf(conf, HCatSourceTarget.class));
+      hiveTableCached = HCatUtil.getTable(hiveMetastoreClient, database, table);
+    } catch (TException e) {
+      throw new IOException(e);
+    }
+
     return hiveTableCached;
+  }
+
+  private void addAvroSchemaToFormatBundle(Configuration conf) throws IOException, TException {
+    Properties tableProps = getHiveTable(conf).getMetadata();
+    if (isAvroBackedTable(tableProps)) {
+      try {
+        Schema schema = AvroSerdeUtils.determineSchemaOrThrowException(conf, tableProps);
+        // add to the extra bundle config to avoid polluting
+        // the job config with potentially multiple different
+        // schemas if multiple hcat schemas as read
+        bundle.set(AVRO_TABLE_SCHEMA_PROP, schema.toString());
+      } catch (AvroSerdeException e) {
+        throw new CrunchRuntimeException(e);
+      }
+    }
+  }
+
+  private static boolean isAvroBackedTable(Properties tableProps) {
+    Set<String> names = tableProps.stringPropertyNames();
+    return names.contains(AvroSerdeUtils.AvroTableProperties.SCHEMA_LITERAL.getPropName())
+        || names.contains(AvroSerdeUtils.AvroTableProperties.SCHEMA_URL.getPropName());
   }
 
   @Override
